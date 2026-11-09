@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 const demoScript = `Open with a close-up of a desk at sunrise.
 
@@ -47,11 +47,42 @@ function splitScriptIntoScenes(script) {
   }));
 }
 
+function choosePreferredVoice(voices) {
+  const englishVoices = voices.filter((voice) => voice.lang?.toLowerCase().startsWith('en'));
+  const candidates = englishVoices.length ? englishVoices : voices;
+  const preferred = candidates.find((voice) =>
+    /natural|neural|google us english|jenny|aria|samantha/i.test(voice.name)
+  );
+  return preferred || candidates.find((voice) => voice.default) || candidates[0];
+}
+
 export default function App() {
   const [script, setScript] = useState(demoScript);
   const [scenes, setScenes] = useState(() => splitScriptIntoScenes(demoScript));
   const [status, setStatus] = useState('Ready');
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [voices, setVoices] = useState([]);
+  const [voiceName, setVoiceName] = useState('');
+  const [speechRate, setSpeechRate] = useState('0.95');
+
+  useEffect(() => {
+    if (!('speechSynthesis' in window)) return undefined;
+
+    const loadVoices = () => {
+      const availableVoices = window.speechSynthesis.getVoices();
+      setVoices(availableVoices);
+      setVoiceName((currentName) => {
+        if (currentName && availableVoices.some((voice) => voice.name === currentName)) {
+          return currentName;
+        }
+        return choosePreferredVoice(availableVoices)?.name || '';
+      });
+    };
+
+    loadVoices();
+    window.speechSynthesis.addEventListener('voiceschanged', loadVoices);
+    return () => window.speechSynthesis.removeEventListener('voiceschanged', loadVoices);
+  }, []);
 
   const projectSummary = useMemo(() => {
     const words = script.trim().split(/\s+/).filter(Boolean).length;
@@ -59,10 +90,14 @@ export default function App() {
   }, [script, scenes]);
 
   const handleGenerateScenes = () => {
+    if (!script.trim()) {
+      setStatus('Add a script first');
+      return;
+    }
     setStatus('Generating scenes...');
     const nextScenes = splitScriptIntoScenes(script);
     setScenes(nextScenes);
-    setTimeout(() => setStatus('Scenes ready'), 250);
+    setStatus('Scenes ready');
   };
 
   const handleAddScene = () => {
@@ -87,19 +122,38 @@ export default function App() {
 
   const speakNarration = (text) => {
     if (!('speechSynthesis' in window)) {
-      alert('Speech synthesis is not supported in this browser.');
+      setStatus('Speech playback is not supported in this browser');
+      return;
+    }
+    if (!text.trim()) {
+      setStatus('Add narration text first');
       return;
     }
 
     window.speechSynthesis.cancel();
 
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'en-US';
-    utterance.rate = 1;
-    utterance.pitch = 1.1;
-    utterance.onstart = () => setIsSpeaking(true);
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = () => setIsSpeaking(false);
+    const utterance = new SpeechSynthesisUtterance(text.trim());
+    const selectedVoice = voices.find((voice) => voice.name === voiceName);
+    if (selectedVoice) {
+      utterance.voice = selectedVoice;
+      utterance.lang = selectedVoice.lang;
+    } else {
+      utterance.lang = 'en-US';
+    }
+    utterance.rate = Number(speechRate);
+    utterance.pitch = 1;
+    utterance.onstart = () => {
+      setIsSpeaking(true);
+      setStatus('Playing narration');
+    };
+    utterance.onend = () => {
+      setIsSpeaking(false);
+      setStatus('Ready');
+    };
+    utterance.onerror = () => {
+      setIsSpeaking(false);
+      setStatus('Could not play narration. Try another voice.');
+    };
 
     window.speechSynthesis.speak(utterance);
   };
@@ -108,6 +162,7 @@ export default function App() {
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
       setIsSpeaking(false);
+      setStatus('Ready');
     }
   };
 
@@ -139,7 +194,7 @@ export default function App() {
             <button className="secondary-button" onClick={handleGenerateScenes}>
               Generate scenes
             </button>
-            <button className="voice-button" onClick={() => speakNarration(script)}>
+            <button className="voice-button" onClick={() => speakNarration(script)} disabled={isSpeaking}>
               {isSpeaking ? 'Speaking...' : 'Play all'}
             </button>
             {isSpeaking && (
@@ -156,6 +211,37 @@ export default function App() {
           placeholder="Paste your YouTube script here..."
           rows={8}
         />
+
+        <div className="voice-settings">
+          <label>
+            Free device voice
+            <select
+              value={voiceName}
+              onChange={(event) => setVoiceName(event.target.value)}
+              disabled={!voices.length}
+            >
+              {voices.length ? voices.map((voice) => (
+                <option key={`${voice.name}-${voice.lang}`} value={voice.name}>
+                  {voice.name} ({voice.lang}){voice.default ? ' — device default' : ''}
+                </option>
+              )) : <option value="">Loading available voices…</option>}
+            </select>
+          </label>
+          <label>
+            Narration pace: {Number(speechRate).toFixed(2)}×
+            <input
+              type="range"
+              min="0.8"
+              max="1.1"
+              step="0.05"
+              value={speechRate}
+              onChange={(event) => setSpeechRate(event.target.value)}
+            />
+          </label>
+          <p className="voice-note">
+            Uses voices installed on this device for free. Voice options and naturalness depend on your browser and device.
+          </p>
+        </div>
       </section>
 
       <section className="panel">
@@ -222,7 +308,7 @@ export default function App() {
               </label>
 
               <div className="button-row">
-                <button className="voice-button" onClick={() => speakNarration(scene.narration)}>
+                <button className="voice-button" onClick={() => speakNarration(scene.narration)} disabled={isSpeaking}>
                   Speak scene
                 </button>
               </div>
